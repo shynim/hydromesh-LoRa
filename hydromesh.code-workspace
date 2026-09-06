@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "firmware"
+		},
+		{
+			"path": "dashboard"
+		}
+	],
+	"settings": {}
+}
