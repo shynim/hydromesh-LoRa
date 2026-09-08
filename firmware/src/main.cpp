@@ -3,17 +3,56 @@
 #include <ArduinoOTA.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h> 
+#include <Wire.h> // Added for I2C communication with MAX17048
 
 // --- Wi-Fi & Server Details ---
 const char* WIFI_SSID = "a22";
 const char* WIFI_PASSWORD = "catandme";
-const char* SERVER_URL = "http://10.107.167.15:4000/api/node-update";
+const char* SERVER_URL = "http://10.242.243.15:4000/api/node-update";
 
 unsigned long lastDataSent = 0;
 const long interval = 5000; // Send data every 5 seconds
 
+// --- Hardware Pins & Addresses ---
+#define CHG_PIN 40
+#define MAX17048_I2C_ADDR 0x36
+#define MAX17048_SOC_REG  0x04
+
+// --- Helper to Read Battery % from MAX17048 ---
+float getRealBatteryPercent() {
+  Wire.beginTransmission(MAX17048_I2C_ADDR);
+  Wire.write(MAX17048_SOC_REG);
+  
+  // If the IC isn't responding, return a safe fallback value
+  if (Wire.endTransmission(false) != 0) {
+    return 100.0; 
+  }
+
+  Wire.requestFrom(MAX17048_I2C_ADDR, 2);
+  if (Wire.available() == 2) {
+    uint8_t msb = Wire.read();
+    uint8_t lsb = Wire.read();
+    
+    // MAX17048 SOC formula: MSB is %, LSB is 1/256 %
+    float soc = msb + (lsb / 256.0);
+    
+    // Clamp the value cleanly between 0 and 100
+    if (soc > 100.0) soc = 100.0;
+    if (soc < 0.0) soc = 0.0;
+    return soc;
+  }
+  return 100.0; // Fallback
+}
+
+// --- Helper to Read Charging Status from BQ24074 ---
+bool getRealChargingStatus() {
+  // The BQ24074 CHG pin pulls LOW when actively charging
+  return (digitalRead(CHG_PIN) == LOW);
+}
+
 // --- Helper Function to Build and Send JSON ---
-void sendNodeUpdate(const char* id, const char* kind, const char* name, double lat, double lng, const char* parent, int battery, bool isActive, float waterLevel = -1.0) {
+// Notice the new 'bool isCharging' parameter!
+void sendNodeUpdate(const char* id, const char* kind, const char* name, double lat, double lng, const char* parent, int battery, bool isCharging, bool isActive, float waterLevel = -1.0) {
   HTTPClient http;
   http.begin(SERVER_URL);
   http.setTimeout(2000);
@@ -35,7 +74,7 @@ void sendNodeUpdate(const char* id, const char* kind, const char* name, double l
   }
   
   doc["battery_percent"] = battery;
-  doc["is_charging"] = false;
+  doc["is_charging"] = isCharging; // Now dynamically set!
   doc["is_active"] = isActive;
   doc["rssi"] = -65; // Static fake signal strength for the test
   
@@ -61,6 +100,13 @@ void sendNodeUpdate(const char* id, const char* kind, const char* name, double l
 
 void setup() {
   Serial.begin(115200);
+  
+  // Initialize I2C (SDA = GPIO5, SCL = GPIO6)
+  Wire.begin(5, 6);
+  
+  // Initialize Charger Pin with internal pullup
+  pinMode(CHG_PIN, INPUT_PULLUP);
+  
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH); 
 
@@ -116,17 +162,22 @@ void loop() {
 
       // Send the nodes sequentially, bottom-up (Sensor -> Routers -> Gateway)
       
-      // 1. River Sensor (Routing to West Router)
-      sendNodeUpdate("SN-01", "sensor", "River Sensor (South)", 7.2400, 80.5950, "RT-01", 91, true, fakeWaterLevel);
+      // 1. River Sensor (Routing to West Router - still fake for now)
+      sendNodeUpdate("SN-01", "sensor", "River Sensor (South)", 7.2400, 80.5950, "RT-01", 91, false, true, fakeWaterLevel);
       
-      // 2. East Router (Backup - Idle)
-      sendNodeUpdate("RT-02", "router", "East Router (Backup)", 7.2500, 80.6050, "GW-01", 92, true);
+      // 2. East Router (Backup - Idle - still fake for now)
+      sendNodeUpdate("RT-02", "router", "East Router (Backup)", 7.2500, 80.6050, "GW-01", 92, false, true);
       
-      // 3. West Router (Primary - Active)
-      sendNodeUpdate("RT-01", "router", "West Router (Primary)", 7.2500, 80.5850, "GW-01", 86, true);
+      // 3. West Router (Primary - Active - still fake for now)
+      sendNodeUpdate("RT-01", "router", "West Router (Primary)", 7.2500, 80.5850, "GW-01", 86, false, true);
       
-      // 4. Central Gateway
-      sendNodeUpdate("GW-01", "gateway", "Central Gateway (North)", 7.2600, 80.5950, nullptr, 100, true);
+      // 4. Central Gateway (THIS IS NOW USING REAL HARDWARE DATA)
+      float realBattery = getRealBatteryPercent();
+      bool realCharging = getRealChargingStatus();
+      
+      Serial.printf("Gateway Hardware -> Battery: %.1f%%, Charging: %s\n", realBattery, realCharging ? "YES" : "NO");
+      
+      sendNodeUpdate("GW-01", "gateway", "Central Gateway (North)", 7.2600, 80.5950, nullptr, (int)realBattery, realCharging, true);
 
       digitalWrite(LED_BUILTIN, HIGH); // Turn LED OFF when done
     } else {
