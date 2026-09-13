@@ -60,6 +60,8 @@
 
 #define LAZY_CONTACTS_WRITE_DELAY    5000
 
+extern float liveWaterLevel;
+
 // --- INJECT SENSOR FUNCTION ---
 void MyMesh::injectSensor(const char* hex_id) {
   uint8_t pub_key[32];
@@ -746,6 +748,46 @@ void MyMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, 
 
         // Print the incoming alert text to the Gateway Serial monitor!
         Serial.printf("[GATEWAY RECV] From %02X: %s\n", (uint32_t)packet->payload[1], &data[5]);
+
+        // --- BRIDGE LOGIC STARTS HERE ---
+        char* text = (char*)&data[5];
+        if (strncmp(text, "RIVER_LEVEL:", 12) == 0) {
+          extern float liveWaterLevel; 
+          extern String liveSensorParent; 
+          
+          liveWaterLevel = atof(text + 12);
+          
+          // --- ADVANCED HOP DETECTION ---
+          if (packet->path_len == 0) {
+            // No hops. Reached the Gateway directly!
+            liveSensorParent = "GW-01"; 
+          } else {
+            // It hopped! The immediate parent is the LAST router that forwarded it.
+            // Since each hop adds 6 bytes, we grab the last 6 bytes in the path array.
+            int lastHopIndex = packet->path_len - 6;
+            
+            // Extract the 6-byte ID into a readable Hex String
+            char hopHex[13];
+            for (int h = 0; h < 6; h++) {
+              sprintf(&hopHex[h * 2], "%02X", packet->path[lastHopIndex + h]);
+            }
+            
+            // Match the Hex ID to your physical routers!
+            // REPLACE THESE PLACEHOLDERS WITH THE FIRST 12 CHARACTERS OF YOUR ROUTERS' IDs
+            if (strcmp(hopHex, "112233445566") == 0) { 
+                liveSensorParent = "RT-01"; // Matched West Router
+            } else if (strcmp(hopHex, "AABBCCDDEEFF") == 0) { 
+                liveSensorParent = "RT-02"; // Matched East Router
+            } else {
+                // Failsafe if a new/unknown router forwards the packet
+                liveSensorParent = String("UNKNOWN-") + hopHex; 
+            }
+          }
+          
+          int numberOfHops = packet->path_len / 6;
+          Serial.printf("[BRIDGE] Water: %.1fcm | Hops: %d | Parent: %s\n", liveWaterLevel, numberOfHops, liveSensorParent.c_str());
+        }
+        // --- BRIDGE LOGIC ENDS HERE ---
       }
 
       uint8_t temp[166];
