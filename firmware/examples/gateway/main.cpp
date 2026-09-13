@@ -101,13 +101,15 @@ void setup() {
   ethernet_command[0] = 0;
 #endif
 
-  sensors.begin();
+  // --- HARDWARE FIX --- 
+  // Commented out to prevent the I2C scanning spam on boot
+  // sensors.begin();
 
   the_mesh.begin(fs);
 
   // --- INJECT SENSOR ID HERE ---
   // Tells the Gateway to natively trust packets from your Sensor
-  the_mesh.injectSensor("2BDFB24E6FBB2E4ECC46B6541129DB99BACDBC495740E308D185856047FC0CED");
+  the_mesh.injectSensor("428269A0B87B76D6871B2AEBABB988D1F50D0994CB728C3E64F337DB975E7D5F");
 
 #ifdef DISPLAY_CLASS
   ui_task.begin(the_mesh.getNodePrefs(), FIRMWARE_BUILD_DATE, FIRMWARE_VERSION);
@@ -189,7 +191,11 @@ void loop() {
 #endif
 
   the_mesh.loop();
-  sensors.loop();
+  
+  // --- HARDWARE FIX ---
+  // Commented out to prevent unnecessary I2C polling
+  // sensors.loop();
+  
 #ifdef DISPLAY_CLASS
   ui_task.loop();
 #endif

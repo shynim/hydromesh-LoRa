@@ -34,12 +34,39 @@ public:
     }
   }
 
-  // Helper method to push to MeshCore's built-in alert queue
+// Helper method to completely hardcode the target and bypass the native index loop
   void triggerRiverAlert(int level) {
-    alertIf(false, river_alert, HIGH_PRI_ALERT, ""); // Reset the trigger state
     char msg[64];
     snprintf(msg, sizeof(msg), "RIVER_LEVEL:%d", level);
-    alertIf(true, river_alert, HIGH_PRI_ALERT, msg); // Fire the new alert
+
+    // 1. HARDCODE: Find Gateway by exact Hex ID
+    uint8_t gw_pub[32];
+    mesh::Utils::fromHex(gw_pub, 32, "7487D9C4E901815F93CA93E307B1ECB6BC359C4D488A64822C787ACA8BB2C8F2");
+    ClientInfo* gw_client = acl.getClient(gw_pub, 32);
+
+    if (gw_client) {
+      // 2. Configure the trigger correctly
+      StrHelper::strncpy(river_alert.text, msg, sizeof(river_alert.text));
+      river_alert.pri = LOW_PRI_ALERT;
+      river_alert.attempt = 0; // Fixes the ACK hash bug
+      river_alert.curr_contact_idx = 99; // Force native loop to ignore index routing
+
+      // 3. Ensure it is in the active queue so the Sensor listens for the routing ACK
+      bool in_queue = false;
+      for (int i = 0; i < num_alert_tasks; i++) {
+        if (alert_tasks[i] == &river_alert) { in_queue = true; break; }
+      }
+      if (!in_queue && num_alert_tasks < MAX_CONCURRENT_ALERTS) {
+        alert_tasks[num_alert_tasks++] = &river_alert;
+      }
+
+      // 4. HARDCODE SEND: Fire directly using the Gateway client
+      sendAlert(gw_client, &river_alert);
+      
+      Serial.println("[RIVER SENSOR] -> Hardcoded alert sent directly to 74! (Listening for ACK...)");
+    } else {
+      Serial.println("[RIVER SENSOR] Error: Gateway not found in ACL!");
+    }
   }
 
 protected:
@@ -50,8 +77,8 @@ protected:
   void onSensorDataRead() override {
     float batt_voltage = getVoltage(TELEM_CHANNEL_SELF);
     battery_data.recordData(getRTCClock(), batt_voltage);   
-    alertIf(batt_voltage < 3.4f, critical_batt, HIGH_PRI_ALERT, "Battery is critical!");
-    alertIf(batt_voltage < 3.6f, low_batt, LOW_PRI_ALERT, "Battery is low");
+    // alertIf(batt_voltage < 3.4f, critical_batt, HIGH_PRI_ALERT, "Battery is critical!");
+    // alertIf(batt_voltage < 3.6f, low_batt, LOW_PRI_ALERT, "Battery is low");
   }
 
   int querySeriesData(uint32_t start_secs_ago, uint32_t end_secs_ago, MinMaxAvg dest[], int max_num) override {
@@ -128,7 +155,11 @@ void setup() {
   mesh::Utils::printHex(Serial, the_mesh.self_id.pub_key, PUB_KEY_SIZE); Serial.println();
 
   command[0] = 0;
-  sensors.begin();
+  
+  // --- HARDWARE FIX --- 
+  // Commented out to prevent the I2C scanning spam on boot
+  // sensors.begin(); 
+  
   the_mesh.begin(fs);
 
   // --- Inject Gateway directly into ACL ---
@@ -166,8 +197,6 @@ void loop() {
     command[0] = 0;  
   }
 
-  the_mesh.loop();
-  sensors.loop();
 #ifdef DISPLAY_CLASS
   ui_task.loop();
 #endif
@@ -186,4 +215,10 @@ void loop() {
 
     the_mesh.triggerRiverAlert(fake_level);
   }
+
+  the_mesh.loop();
+  
+  // --- HARDWARE FIX ---
+  // Commented out to prevent unnecessary I2C polling
+  // sensors.loop(); 
 }
