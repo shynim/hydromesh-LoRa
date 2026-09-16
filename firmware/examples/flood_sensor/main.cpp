@@ -4,19 +4,27 @@
 #include "SensorMesh.h"
 #undef private
 
+// --- Global RTC Memory ---
+RTC_DATA_ATTR uint8_t msg_id = 0; 
+
 // --- Battery & Charging Hardware Setup ---
 #define CHG_PIN 40
 #define MAX17048_I2C_ADDR 0x36
 #define MAX17048_SOC_REG  0x04
 
 // --- Ultrasonic Sensor Setup ---
-#define TRIG_PIN D6   // Trigger pin (change to your exact GPIO)
-#define ECHO_PIN D7    // Echo pin (change to your exact GPIO)
-#define VCC_PIN 41     // Power toggle pin
+#define TRIG_PIN D6   
+#define ECHO_PIN D7   
+#define VCC_PIN 41    
 
 const int NUM_SAMPLES = 5;      
-const int WARMUP_DELAY = 150;   
+const int WARMUP_DELAY = 1500;   
 const int PING_INTERVAL = 50;   
+
+// --- Sleep Control Variables ---
+bool readingTaken = false;
+unsigned long transmissionStartTime = 0;
+const unsigned long MESH_SEND_WAIT_TIME = 2000; // Give the mesh 4 seconds to send/ACK
 
 bool getRealChargingStatus() {
   pinMode(CHG_PIN, INPUT_PULLUP);
@@ -90,7 +98,7 @@ long getRealWaterLevel() {
 
   if (validSamples > 0) {
     sortArray(readings, validSamples);
-    return readings[validSamples / 2]; 
+    return (400.0 - readings[validSamples / 2]); 
   }
   
   return -1; // Indicates a sensor failure/error
@@ -122,11 +130,10 @@ public:
     int currentBatt = (int)getRealBatteryPercent(); 
     bool isCharging = getRealChargingStatus();
     
-    // 1. Use a wrapping counter (loops back to 0 after 99)
-    static uint8_t msg_id = 0;
+    // Increment the global RTC variable
     msg_id = (msg_id + 1) % 100; 
     
-    // 2. Append the small ID to the end
+    // Append the ID to force a unique hash
     snprintf(msg, sizeof(msg), "RIVER:%d,BATT:%d,CHG:%d,ID:%d", level, currentBatt, isCharging ? 1 : 0, msg_id);
 
     uint8_t gw_pub[32];
@@ -138,7 +145,7 @@ public:
       river_alert.pri = LOW_PRI_ALERT;
       river_alert.attempt = 0; 
       river_alert.curr_contact_idx = 99;
-      
+
       bool in_queue = false;
       for (int i = 0; i < num_alert_tasks; i++) {
         if (alert_tasks[i] == &river_alert) { in_queue = true; break; }
@@ -176,7 +183,6 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  // --- Ultrasonic Pins Setup ---
   pinMode(VCC_PIN, OUTPUT);
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
@@ -221,31 +227,43 @@ void setup() {
 #endif
 }
 
-unsigned long lastSendTime = 0;
-const unsigned long sendInterval = 15000; 
-
 void loop() {
   rtc_clock.tick();
 #ifdef HAS_EXTERNAL_WATCHDOG
   external_watchdog.loop();
 #endif
   
-  if (millis() - lastSendTime >= sendInterval) {
-    lastSendTime = millis();
+  // STEP 1: Take the reading and queue the transmission ONCE per boot
+  if (!readingTaken) {
     Serial.println("\n[RIVER SENSOR] Waking ultrasonic sensor for reading...");
     long real_level = getRealWaterLevel();
-    //long real_level = 69.0;
-
     Serial.println(real_level);
 
     if (real_level > 0) {
-      Serial.printf("[RIVER SENSOR] Current Filtered Level: %dcm\n", real_level);
+      Serial.printf("[RIVER SENSOR] Current Filtered Level: %ldcm\n", real_level);
       Serial.println("[RIVER SENSOR] Queuing targeted alert to Gateway...");
       the_mesh.triggerRiverAlert(real_level);
     } else {
-      Serial.println("[RIVER SENSOR] Error: Failed to get valid water level. Skipping transmission.");
+      Serial.println("[RIVER SENSOR] Error: Failed to get valid water level.");
     }
-
+    
+    readingTaken = true;
+    transmissionStartTime = millis(); 
   }
+
   the_mesh.loop();
+
+  if (readingTaken && (millis() - transmissionStartTime >= MESH_SEND_WAIT_TIME)) {
+    Serial.println("[RIVER SENSOR] Transmission window closed. Going to deep sleep.");
+    
+    digitalWrite(VCC_PIN, LOW); 
+    
+    // Define sleep time in microseconds (currently set to 15 seconds)
+    // Formula: Seconds * 1000000
+    uint64_t sleepTime_us = 15 * 1000000ULL; 
+    
+    esp_sleep_enable_timer_wakeup(sleepTime_us);
+    Serial.flush(); 
+    esp_deep_sleep_start();
+  }
 }
