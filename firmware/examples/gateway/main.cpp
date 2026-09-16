@@ -10,7 +10,7 @@
 // --- Wi-Fi & Server Details ---
 const char* WIFI_SSID = "a22";
 const char* WIFI_PASSWORD = "catandme";
-const char* SERVER_URL = "http://10.249.20.15:4000/api/node-update";
+const char* SERVER_URL = "http://10.44.143.15:4000/api/node-update";
 
 unsigned long lastDataSent = 0;
 const long interval = 5000;
@@ -20,6 +20,7 @@ float liveWaterLevel = -1.0;
 String liveSensorParent = "GW-01"; 
 int liveSensorBattery = 100; 
 bool liveSensorCharging = false; 
+bool hasNewMeshPacket = false;
 
 // --- Hardware Pins & Addresses ---
 #define CHG_PIN 40
@@ -188,40 +189,30 @@ void setup() {
 }
 
 void loop() {
-  // MUST call this to listen for wireless uploads & handle incoming mesh packets!
   ArduinoOTA.handle();
   the_mesh.loop();
   rtc_clock.tick();
 
-  // Non-Blocking Timer to send data to dashboard every 5 seconds
-  if (millis() - lastDataSent >= interval) {
-    lastDataSent = millis();
+  // Send data ONLY when triggered by a new mesh transmission
+  if (hasNewMeshPacket) {
+    hasNewMeshPacket = false; // Reset the flag immediately
 
     if (WiFi.status() == WL_CONNECTED) {
-      digitalWrite(LED_BUILTIN, LOW); // Flash LED ON during transmission
-      Serial.println("\n--- Sending Live Mesh Update ---");
+      digitalWrite(LED_BUILTIN, LOW); // Flash LED during transmission
+      Serial.println("\n--- Processing New Mesh Packet & Sending to Dashboard ---");
 
-      // 1. River Sensor (Gets the DYNAMIC parent variable!)
-      // 1. River Sensor (Now with DYNAMIC parent AND DYNAMIC battery!)
       sendNodeUpdate("SN-01", "sensor", "River Sensor (South)", 7.2400, 80.5950, liveSensorParent.c_str(), liveSensorBattery, liveSensorCharging, true, liveWaterLevel);      
-      
-      // 2. East Router (Backup - Static for now)
       sendNodeUpdate("RT-02", "router", "East Router (Backup)", 7.2500, 80.6050, "GW-01", 92, false, true);
-      
-      // 3. West Router (Primary - Static for now)
       sendNodeUpdate("RT-01", "router", "West Router (Primary)", 7.2500, 80.5850, "GW-01", 86, false, true);
       
-      // 4. Central Gateway (Top of the chain, so parent is nullptr!)
       float realBattery = getRealBatteryPercent();
       bool realCharging = getRealChargingStatus();
       
-      Serial.printf("Gateway Hardware -> Battery: %.1f%%, Charging: %s | Live Water Level: %.1fcm\n", realBattery, realCharging ? "YES" : "NO", liveWaterLevel);
-      
       sendNodeUpdate("GW-01", "gateway", "Central Gateway (North)", 7.2600, 80.5950, nullptr, (int)realBattery, realCharging, true);
 
-      digitalWrite(LED_BUILTIN, HIGH); // Turn LED OFF when done
+      digitalWrite(LED_BUILTIN, HIGH); 
     } else {
-      Serial.println("Wi-Fi Disconnected!");
+      Serial.println("Wi-Fi Disconnected when packet arrived!");
     }
   }
 }

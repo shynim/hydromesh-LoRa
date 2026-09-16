@@ -756,17 +756,19 @@ void MyMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, 
           extern float liveWaterLevel; 
           extern String liveSensorParent; 
           extern int liveSensorBattery; 
-          extern bool liveSensorCharging; // Bring in the new charging variable
+          extern bool liveSensorCharging; 
+          extern bool hasNewMeshPacket;
           
           int parsedWater = 0;
           int parsedBatt = 0;
           int parsedChg = 0;
           
-          // Grab all 3 numbers from the text string
           if (sscanf(text, "RIVER:%d,BATT:%d,CHG:%d", &parsedWater, &parsedBatt, &parsedChg) == 3) {
               liveWaterLevel = (float)parsedWater;
               liveSensorBattery = parsedBatt;
               liveSensorCharging = (parsedChg == 1);
+              
+              hasNewMeshPacket = true; // <--- TRIGGER DASHBOARD UPDATE HERE!
           }
           
           if (packet->path_len == 0) {

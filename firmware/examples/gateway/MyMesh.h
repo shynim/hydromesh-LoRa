@@ -185,7 +185,6 @@ public:
   void begin(FILESYSTEM* fs);
   void sendNodeDiscoverReq();
   
-  // --- INJECTION METHOD ---
   void injectSensor(const char* hex_id);
 
   const char* getFirmwareVer() override { return FIRMWARE_VERSION; }

@@ -9,6 +9,15 @@
 #define MAX17048_I2C_ADDR 0x36
 #define MAX17048_SOC_REG  0x04
 
+// --- Ultrasonic Sensor Setup ---
+#define TRIG_PIN D6   // Trigger pin (change to your exact GPIO)
+#define ECHO_PIN D7    // Echo pin (change to your exact GPIO)
+#define VCC_PIN 41     // Power toggle pin
+
+const int NUM_SAMPLES = 5;      
+const int WARMUP_DELAY = 150;   
+const int PING_INTERVAL = 50;   
+
 bool getRealChargingStatus() {
   pinMode(CHG_PIN, INPUT_PULLUP);
   return (digitalRead(CHG_PIN) == LOW);
@@ -34,6 +43,57 @@ float getRealBatteryPercent() {
     return soc;
   }
   return 100.0; 
+}
+
+// Simple Bubble Sort for Ultrasonic Readings
+void sortArray(long array[], int size) {
+  for (int i = 0; i < size - 1; i++) {
+    for (int j = 0; j < size - i - 1; j++) {
+      if (array[j] > array[j + 1]) {
+        long temp = array[j];
+        array[j] = array[j + 1];
+        array[j + 1] = temp;
+      }
+    }
+  }
+}
+
+// Encapsulated Ultrasonic Read Process
+long getRealWaterLevel() {
+  digitalWrite(VCC_PIN, HIGH);
+  delay(WARMUP_DELAY); 
+
+  long readings[NUM_SAMPLES];
+  int validSamples = 0;
+
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    digitalWrite(TRIG_PIN, LOW); 
+    delayMicroseconds(2); 
+    
+    digitalWrite(TRIG_PIN, HIGH); 
+    delayMicroseconds(20); 
+    digitalWrite(TRIG_PIN, LOW); 
+    
+    long duration = pulseIn(ECHO_PIN, HIGH, 26000); 
+    
+    if (duration > 0) {
+      long distance = duration / 58; 
+      if (distance >= 21 && distance <= 600) {
+         readings[validSamples] = distance;
+         validSamples++;
+      }
+    }
+    delay(PING_INTERVAL); 
+  }
+
+  digitalWrite(VCC_PIN, LOW);
+
+  if (validSamples > 0) {
+    sortArray(readings, validSamples);
+    return readings[validSamples / 2]; 
+  }
+  
+  return -1; // Indicates a sensor failure/error
 }
 
 class MyMesh : public SensorMesh {
@@ -62,7 +122,12 @@ public:
     int currentBatt = (int)getRealBatteryPercent(); 
     bool isCharging = getRealChargingStatus();
     
-    snprintf(msg, sizeof(msg), "RIVER:%d,BATT:%d,CHG:%d", level, currentBatt, isCharging ? 1 : 0);
+    // 1. Use a wrapping counter (loops back to 0 after 99)
+    static uint8_t msg_id = 0;
+    msg_id = (msg_id + 1) % 100; 
+    
+    // 2. Append the small ID to the end
+    snprintf(msg, sizeof(msg), "RIVER:%d,BATT:%d,CHG:%d,ID:%d", level, currentBatt, isCharging ? 1 : 0, msg_id);
 
     uint8_t gw_pub[32];
     mesh::Utils::fromHex(gw_pub, 32, "7487D9C4E901815F93CA93E307B1ECB6BC359C4D488A64822C787ACA8BB2C8F2");
@@ -72,8 +137,8 @@ public:
       StrHelper::strncpy(river_alert.text, msg, sizeof(river_alert.text));
       river_alert.pri = LOW_PRI_ALERT;
       river_alert.attempt = 0; 
-      river_alert.curr_contact_idx = 99; 
-
+      river_alert.curr_contact_idx = 99;
+      
       bool in_queue = false;
       for (int i = 0; i < num_alert_tasks; i++) {
         if (alert_tasks[i] == &river_alert) { in_queue = true; break; }
@@ -110,6 +175,12 @@ void halt() { while (1) ; }
 void setup() {
   Serial.begin(115200);
   delay(1000);
+
+  // --- Ultrasonic Pins Setup ---
+  pinMode(VCC_PIN, OUTPUT);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  digitalWrite(VCC_PIN, LOW); // Force off on boot
 
   board.begin();
 #ifdef HAS_EXTERNAL_WATCHDOG
@@ -158,17 +229,23 @@ void loop() {
 #ifdef HAS_EXTERNAL_WATCHDOG
   external_watchdog.loop();
 #endif
-
-  // --- 15-Second Targeted Alert Cycle ---
+  
   if (millis() - lastSendTime >= sendInterval) {
     lastSendTime = millis();
-    int fake_level = random(15, 45); 
+    Serial.println("\n[RIVER SENSOR] Waking ultrasonic sensor for reading...");
+    long real_level = getRealWaterLevel();
+    //long real_level = 69.0;
 
-    Serial.printf("\n[RIVER SENSOR] Current Level: %dcm\n", fake_level);
-    Serial.println("[RIVER SENSOR] Queuing targeted alert to Gateway...");
+    Serial.println(real_level);
 
-    the_mesh.triggerRiverAlert(fake_level);
+    if (real_level > 0) {
+      Serial.printf("[RIVER SENSOR] Current Filtered Level: %dcm\n", real_level);
+      Serial.println("[RIVER SENSOR] Queuing targeted alert to Gateway...");
+      the_mesh.triggerRiverAlert(real_level);
+    } else {
+      Serial.println("[RIVER SENSOR] Error: Failed to get valid water level. Skipping transmission.");
+    }
+
   }
-
   the_mesh.loop();
 }
