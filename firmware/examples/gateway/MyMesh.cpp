@@ -751,41 +751,45 @@ void MyMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, 
 
         // --- BRIDGE LOGIC STARTS HERE ---
         char* text = (char*)&data[5];
-        if (strncmp(text, "RIVER_LEVEL:", 12) == 0) {
+        
+        if (strncmp(text, "RIVER:", 6) == 0) {
           extern float liveWaterLevel; 
           extern String liveSensorParent; 
+          extern int liveSensorBattery; 
+          extern bool liveSensorCharging; // Bring in the new charging variable
           
-          liveWaterLevel = atof(text + 12);
+          int parsedWater = 0;
+          int parsedBatt = 0;
+          int parsedChg = 0;
           
-          // --- ADVANCED HOP DETECTION ---
+          // Grab all 3 numbers from the text string
+          if (sscanf(text, "RIVER:%d,BATT:%d,CHG:%d", &parsedWater, &parsedBatt, &parsedChg) == 3) {
+              liveWaterLevel = (float)parsedWater;
+              liveSensorBattery = parsedBatt;
+              liveSensorCharging = (parsedChg == 1);
+          }
+          
           if (packet->path_len == 0) {
-            // No hops. Reached the Gateway directly!
             liveSensorParent = "GW-01"; 
           } else {
-            // It hopped! The immediate parent is the LAST router that forwarded it.
-            // Since each hop adds 6 bytes, we grab the last 6 bytes in the path array.
             int lastHopIndex = packet->path_len - 6;
-            
-            // Extract the 6-byte ID into a readable Hex String
             char hopHex[13];
             for (int h = 0; h < 6; h++) {
               sprintf(&hopHex[h * 2], "%02X", packet->path[lastHopIndex + h]);
             }
             
-            // Match the Hex ID to your physical routers!
-            // REPLACE THESE PLACEHOLDERS WITH THE FIRST 12 CHARACTERS OF YOUR ROUTERS' IDs
-            if (strcmp(hopHex, "112233445566") == 0) { 
-                liveSensorParent = "RT-01"; // Matched West Router
-            } else if (strcmp(hopHex, "AABBCCDDEEFF") == 0) { 
-                liveSensorParent = "RT-02"; // Matched East Router
+            if (strcmp(hopHex, "2FCF7A82AF7B") == 0) { 
+                liveSensorParent = "RT-01"; 
+            } else if (strcmp(hopHex, "1B5DE6C345A5") == 0) { 
+                liveSensorParent = "RT-02"; 
             } else {
-                // Failsafe if a new/unknown router forwards the packet
                 liveSensorParent = String("UNKNOWN-") + hopHex; 
             }
           }
           
           int numberOfHops = packet->path_len / 6;
-          Serial.printf("[BRIDGE] Water: %.1fcm | Hops: %d | Parent: %s\n", liveWaterLevel, numberOfHops, liveSensorParent.c_str());
+          Serial.printf("[BRIDGE] Water: %.1fcm | Batt: %d%% | Chg: %s | Hops: %d | Parent: %s\n", 
+            liveWaterLevel, liveSensorBattery, liveSensorCharging ? "YES" : "NO", numberOfHops, liveSensorParent.c_str());
         }
         // --- BRIDGE LOGIC ENDS HERE ---
       }

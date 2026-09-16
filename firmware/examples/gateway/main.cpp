@@ -3,21 +3,23 @@
 #include <ArduinoOTA.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h> 
-#include <Wire.h> // Added for I2C communication with MAX17048
+#include <Wire.h> 
 #include <Mesh.h>
 #include "MyMesh.h"
 
 // --- Wi-Fi & Server Details ---
 const char* WIFI_SSID = "a22";
 const char* WIFI_PASSWORD = "catandme";
-const char* SERVER_URL = "http://10.207.1.15:4000/api/node-update";
+const char* SERVER_URL = "http://10.249.20.15:4000/api/node-update";
 
 unsigned long lastDataSent = 0;
-const long interval = 5000; // Send data every 5 seconds
+const long interval = 5000;
 
 // --- Live Sensor Data Storage ---
-float liveWaterLevel = -1.0; // Stores the real-time water level from node 42
-String liveSensorParent = "GW-01"; // Stores the dynamic parent node ID
+float liveWaterLevel = -1.0; 
+String liveSensorParent = "GW-01"; 
+int liveSensorBattery = 100; 
+bool liveSensorCharging = false; 
 
 // --- Hardware Pins & Addresses ---
 #define CHG_PIN 40
@@ -200,7 +202,8 @@ void loop() {
       Serial.println("\n--- Sending Live Mesh Update ---");
 
       // 1. River Sensor (Gets the DYNAMIC parent variable!)
-      sendNodeUpdate("SN-01", "sensor", "River Sensor (South)", 7.2400, 80.5950, liveSensorParent.c_str(), 91, false, true, liveWaterLevel);
+      // 1. River Sensor (Now with DYNAMIC parent AND DYNAMIC battery!)
+      sendNodeUpdate("SN-01", "sensor", "River Sensor (South)", 7.2400, 80.5950, liveSensorParent.c_str(), liveSensorBattery, liveSensorCharging, true, liveWaterLevel);      
       
       // 2. East Router (Backup - Static for now)
       sendNodeUpdate("RT-02", "router", "East Router (Backup)", 7.2500, 80.6050, "GW-01", 92, false, true);

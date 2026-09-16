@@ -1,57 +1,79 @@
-// --- THE C++ HACK ---
-// This temporarily changes "private" to "protected" while parsing the header.
-// It allows our MyMesh class to access the internal 'acl' directly without modifying the library!
+#include <Wire.h> 
+
 #define private protected
 #include "SensorMesh.h"
 #undef private
 
-#ifdef DISPLAY_CLASS
-  #include "UITask.h"
-  static UITask ui_task(display);
-#endif
+// --- Battery & Charging Hardware Setup ---
+#define CHG_PIN 40
+#define MAX17048_I2C_ADDR 0x36
+#define MAX17048_SOC_REG  0x04
+
+bool getRealChargingStatus() {
+  pinMode(CHG_PIN, INPUT_PULLUP);
+  return (digitalRead(CHG_PIN) == LOW);
+}
+
+float getRealBatteryPercent() {
+  Wire.beginTransmission(MAX17048_I2C_ADDR);
+  Wire.write(MAX17048_SOC_REG);
+  
+  if (Wire.endTransmission(false) != 0) {
+    return 100.0; 
+  }
+
+  Wire.requestFrom(MAX17048_I2C_ADDR, 2);
+  if (Wire.available() == 2) {
+    uint8_t msb = Wire.read();
+    uint8_t lsb = Wire.read();
+    
+    float soc = msb + (lsb / 256.0);
+    
+    if (soc > 100.0) soc = 100.0;
+    if (soc < 0.0) soc = 0.0;
+    return soc;
+  }
+  return 100.0; 
+}
 
 class MyMesh : public SensorMesh {
 public:
   MyMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::MillisecondClock& ms, mesh::RNG& rng, mesh::RTCClock& rtc, mesh::MeshTables& tables)
-      : SensorMesh(board, radio, ms, rng, rtc, tables), 
-        battery_data(12*24, 5*60) 
+      : SensorMesh(board, radio, ms, rng, rtc, tables)
   {
   }
 
-  // Directly inject the Gateway into the internal ACL table
   void injectGateway(const char* hex_id) {
     uint8_t pub_key[32];
     mesh::Utils::fromHex(pub_key, 32, hex_id);
     mesh::Identity gw_id(pub_key);
 
-    // Because of our hack, 'acl' is now accessible! putClient natively forces creation.
     ClientInfo* gw_client = acl.putClient(gw_id, PERM_ACL_ADMIN | PERM_RECV_ALERTS_HI | PERM_RECV_ALERTS_LO);
     if (gw_client) {
         Serial.println("[SETUP] Gateway successfully hardcoded into ACL!");
-        dirty_contacts_expiry = millis() + 1000; // Tells MeshCore to save the new contact to flash memory
+        dirty_contacts_expiry = millis() + 1000; 
     } else {
         Serial.println("[SETUP] Error: Failed to allocate Gateway.");
     }
   }
 
-// Helper method to completely hardcode the target and bypass the native index loop
   void triggerRiverAlert(int level) {
     char msg[64];
-    snprintf(msg, sizeof(msg), "RIVER_LEVEL:%d", level);
+    int currentBatt = (int)getRealBatteryPercent(); 
+    bool isCharging = getRealChargingStatus();
+    
+    snprintf(msg, sizeof(msg), "RIVER:%d,BATT:%d,CHG:%d", level, currentBatt, isCharging ? 1 : 0);
 
-    // 1. HARDCODE: Find Gateway by exact Hex ID
     uint8_t gw_pub[32];
     mesh::Utils::fromHex(gw_pub, 32, "7487D9C4E901815F93CA93E307B1ECB6BC359C4D488A64822C787ACA8BB2C8F2");
     ClientInfo* gw_client = acl.getClient(gw_pub, 32);
 
     if (gw_client) {
-      // 2. Configure the trigger correctly
       StrHelper::strncpy(river_alert.text, msg, sizeof(river_alert.text));
       river_alert.pri = LOW_PRI_ALERT;
-      river_alert.attempt = 0; // Fixes the ACK hash bug
-      river_alert.curr_contact_idx = 99; // Force native loop to ignore index routing
+      river_alert.attempt = 0; 
+      river_alert.curr_contact_idx = 99; 
 
-      // 3. Ensure it is in the active queue so the Sensor listens for the routing ACK
       bool in_queue = false;
       for (int i = 0; i < num_alert_tasks; i++) {
         if (alert_tasks[i] == &river_alert) { in_queue = true; break; }
@@ -60,7 +82,6 @@ public:
         alert_tasks[num_alert_tasks++] = &river_alert;
       }
 
-      // 4. HARDCODE SEND: Fire directly using the Gateway client
       sendAlert(gw_client, &river_alert);
       
       Serial.println("[RIVER SENSOR] -> Hardcoded alert sent directly to 74! (Listening for ACK...)");
@@ -70,39 +91,21 @@ public:
   }
 
 protected:
-  // Added river_alert to the existing triggers
-  Trigger low_batt, critical_batt, river_alert;
-  TimeSeriesData  battery_data;
+  Trigger river_alert;
 
   void onSensorDataRead() override {
-    float batt_voltage = getVoltage(TELEM_CHANNEL_SELF);
-    battery_data.recordData(getRTCClock(), batt_voltage);   
-    // alertIf(batt_voltage < 3.4f, critical_batt, HIGH_PRI_ALERT, "Battery is critical!");
-    // alertIf(batt_voltage < 3.6f, low_batt, LOW_PRI_ALERT, "Battery is low");
   }
 
   int querySeriesData(uint32_t start_secs_ago, uint32_t end_secs_ago, MinMaxAvg dest[], int max_num) override {
-    battery_data.calcMinMaxAvg(getRTCClock(), start_secs_ago, end_secs_ago, &dest[0], TELEM_CHANNEL_SELF, LPP_VOLTAGE);
-    return 1;
-  }
-
-  bool handleCustomCommand(uint32_t sender_timestamp, char* command, char* reply) override {
-    if (strcmp(command, "magic") == 0) {    
-      strcpy(reply, "**Magic now done**");
-      return true;   
-    }
-    return false;  
+    return 0; // Indicate no data queried
   }
 };
 
 StdRNG fast_rng;
 SimpleMeshTables tables;
-
 MyMesh the_mesh(board, radio_driver, *new ArduinoMillis(), fast_rng, rtc_clock, tables);
 
 void halt() { while (1) ; }
-
-static char command[160];
 
 void setup() {
   Serial.begin(115200);
@@ -113,34 +116,13 @@ void setup() {
   external_watchdog.begin();
 #endif
 
-#ifdef DISPLAY_CLASS
-  if (display.begin()) {
-    display.startFrame();
-    display.print("Please wait...");
-    display.endFrame();
-  }
-#endif
-
   if (!radio_init()) { halt(); }
   fast_rng.begin(radio_driver.getRngSeed());
 
   FILESYSTEM* fs;
-#if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
-  InternalFS.begin();
-  fs = &InternalFS;
-  IdentityStore store(InternalFS, "");
-#elif defined(ESP32)
   SPIFFS.begin(true);
   fs = &SPIFFS;
   IdentityStore store(SPIFFS, "/identity");
-#elif defined(RP2040_PLATFORM)
-  LittleFS.begin();
-  fs = &LittleFS;
-  IdentityStore store(LittleFS, "/identity");
-  store.begin();
-#else
-  #error "need to define filesystem"
-#endif
 
   if (!store.load("_main", the_mesh.self_id)) {
     the_mesh.self_id = radio_new_identity();   
@@ -153,21 +135,15 @@ void setup() {
 
   Serial.print("Sensor ID: ");
   mesh::Utils::printHex(Serial, the_mesh.self_id.pub_key, PUB_KEY_SIZE); Serial.println();
-
-  command[0] = 0;
   
-  // --- HARDWARE FIX --- 
-  // Commented out to prevent the I2C scanning spam on boot
-  // sensors.begin(); 
+  // --- Initialize I2C for Battery Reading ---
+  Wire.begin(5, 6); // SDA = 5, SCL = 6
+  pinMode(CHG_PIN, INPUT);
   
   the_mesh.begin(fs);
 
   // --- Inject Gateway directly into ACL ---
   the_mesh.injectGateway("7487D9C4E901815F93CA93E307B1ECB6BC359C4D488A64822C787ACA8BB2C8F2");
-
-#ifdef DISPLAY_CLASS
-  ui_task.begin(the_mesh.getNodePrefs(), FIRMWARE_BUILD_DATE, FIRMWARE_VERSION);
-#endif
 
 #if ENABLE_ADVERT_ON_BOOT == 1
   the_mesh.sendSelfAdvertisement(16000, false);
@@ -175,37 +151,15 @@ void setup() {
 }
 
 unsigned long lastSendTime = 0;
-const unsigned long sendInterval = 30000; 
+const unsigned long sendInterval = 15000; 
 
 void loop() {
-  int len = strlen(command);
-  while (Serial.available() && len < sizeof(command)-1) {
-    char c = Serial.read();
-    if (c != '\n') {
-      command[len++] = c;
-      command[len] = 0;
-    }
-    Serial.print(c);
-  }
-  if (len == sizeof(command)-1) { command[sizeof(command)-1] = '\r'; }
-
-  if (len > 0 && command[len - 1] == '\r') {  
-    command[len - 1] = 0;  
-    char reply[160];
-    the_mesh.handleCommand(0, command, reply);  
-    if (reply[0]) { Serial.print("  -> "); Serial.println(reply); }
-    command[0] = 0;  
-  }
-
-#ifdef DISPLAY_CLASS
-  ui_task.loop();
-#endif
   rtc_clock.tick();
 #ifdef HAS_EXTERNAL_WATCHDOG
   external_watchdog.loop();
 #endif
 
-  // --- 30-Second Targeted Alert Cycle ---
+  // --- 15-Second Targeted Alert Cycle ---
   if (millis() - lastSendTime >= sendInterval) {
     lastSendTime = millis();
     int fake_level = random(15, 45); 
@@ -217,8 +171,4 @@ void loop() {
   }
 
   the_mesh.loop();
-  
-  // --- HARDWARE FIX ---
-  // Commented out to prevent unnecessary I2C polling
-  // sensors.loop(); 
 }
